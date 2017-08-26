@@ -44,6 +44,8 @@
 #include "opencl_kernels_imgproc.hpp"
 #include "opencv2/core/hal/intrin.hpp"
 
+#include "opencv2/core/openvx/ovx_defs.hpp"
+
 namespace cv
 {
 
@@ -204,7 +206,7 @@ thresh_8u( const Mat& _src, Mat& _dst, uchar thresh, uchar maxval, int type )
     if( j_scalar < roi.width )
     {
         const int thresh_pivot = thresh + 1;
-        uchar tab[256];
+        uchar tab[256] = {0};
         switch( type )
         {
         case THRESH_BINARY:
@@ -461,7 +463,7 @@ thresh_16s( const Mat& _src, Mat& _dst, short thresh, short maxval, int type )
             }
             break;
         default:
-            return CV_Error( CV_StsBadArg, "" );
+            CV_Error( CV_StsBadArg, "" ); return;
         }
     }
     else
@@ -515,7 +517,7 @@ thresh_16s( const Mat& _src, Mat& _dst, short thresh, short maxval, int type )
             }
             break;
         default:
-            return CV_Error( CV_StsBadArg, "" );
+            CV_Error( CV_StsBadArg, "" ); return;
         }
     }
 }
@@ -696,7 +698,7 @@ thresh_32f( const Mat& _src, Mat& _dst, float thresh, float maxval, int type )
                 }
                 break;
             default:
-                return CV_Error( CV_StsBadArg, "" );
+                CV_Error( CV_StsBadArg, "" ); return;
         }
     }
     else
@@ -750,7 +752,7 @@ thresh_32f( const Mat& _src, Mat& _dst, float thresh, float maxval, int type )
                 }
                 break;
             default:
-                return CV_Error( CV_StsBadArg, "" );
+                CV_Error( CV_StsBadArg, "" ); return;
         }
     }
 }
@@ -891,7 +893,7 @@ thresh_64f(const Mat& _src, Mat& _dst, double thresh, double maxval, int type)
             }
             break;
         default:
-            return CV_Error(CV_StsBadArg, "");
+            CV_Error(CV_StsBadArg, ""); return;
         }
     }
     else
@@ -950,7 +952,7 @@ thresh_64f(const Mat& _src, Mat& _dst, double thresh, double maxval, int type)
             }
             break;
         default:
-            return CV_Error(CV_StsBadArg, "");
+            CV_Error(CV_StsBadArg, ""); return;
         }
     }
 }
@@ -960,19 +962,18 @@ static bool ipp_getThreshVal_Otsu_8u( const unsigned char* _src, int step, Size 
 {
     CV_INSTRUMENT_REGION_IPP()
 
-#if IPP_VERSION_X100 >= 810
-    int ippStatus = -1;
+// Performance degradations
+#if IPP_VERSION_X100 >= 201800
     IppiSize srcSize = { size.width, size.height };
-    CV_SUPPRESS_DEPRECATED_START
-    ippStatus = CV_INSTRUMENT_FUN_IPP(ippiComputeThreshold_Otsu_8u_C1R, _src, step, srcSize, &thresh);
-    CV_SUPPRESS_DEPRECATED_END
 
-    if(ippStatus >= 0)
-        return true;
+    if(CV_INSTRUMENT_FUN_IPP(ippiComputeThreshold_Otsu_8u_C1R, _src, step, srcSize, &thresh) < 0)
+        return false;
+
+    return true;
 #else
     CV_UNUSED(_src); CV_UNUSED(step); CV_UNUSED(size); CV_UNUSED(thresh);
-#endif
     return false;
+#endif
 }
 #endif
 
@@ -990,7 +991,7 @@ getThreshVal_Otsu_8u( const Mat& _src )
 
 #ifdef HAVE_IPP
     unsigned char thresh;
-    CV_IPP_RUN(IPP_VERSION_X100 >= 810, ipp_getThreshVal_Otsu_8u(_src.ptr(), step, size, thresh), thresh);
+    CV_IPP_RUN_FAST(ipp_getThreshVal_Otsu_8u(_src.ptr(), step, size, thresh), thresh);
 #endif
 
     const int N = 256;
@@ -1244,6 +1245,97 @@ static bool ocl_threshold( InputArray _src, OutputArray _dst, double & thresh, d
 
 #endif
 
+
+#ifdef HAVE_OPENVX
+#define IMPL_OPENVX_TOZERO 1
+static bool openvx_threshold(Mat src, Mat dst, int thresh, int maxval, int type)
+{
+    Mat a = src;
+
+    int trueVal, falseVal;
+    switch (type)
+    {
+    case THRESH_BINARY:
+#ifndef VX_VERSION_1_1
+        if (maxval != 255)
+            return false;
+#endif
+        trueVal = maxval;
+        falseVal = 0;
+        break;
+    case THRESH_TOZERO:
+#if IMPL_OPENVX_TOZERO
+        trueVal = 255;
+        falseVal = 0;
+        if (dst.data == src.data)
+        {
+            a = Mat(src.size(), src.type());
+            src.copyTo(a);
+        }
+        break;
+#endif
+    case THRESH_BINARY_INV:
+#ifdef VX_VERSION_1_1
+        trueVal = 0;
+        falseVal = maxval;
+        break;
+#endif
+    case THRESH_TOZERO_INV:
+#ifdef VX_VERSION_1_1
+#if IMPL_OPENVX_TOZERO
+        trueVal = 0;
+        falseVal = 255;
+        if (dst.data == src.data)
+        {
+            a = Mat(src.size(), src.type());
+            src.copyTo(a);
+        }
+        break;
+#endif
+#endif
+    case THRESH_TRUNC:
+    default:
+        return false;
+    }
+
+    try
+    {
+        ivx::Context ctx = ovx::getOpenVXContext();
+
+        ivx::Threshold thh = ivx::Threshold::createBinary(ctx, VX_TYPE_UINT8, thresh);
+        thh.setValueTrue(trueVal);
+        thh.setValueFalse(falseVal);
+
+        ivx::Image
+            ia = ivx::Image::createFromHandle(ctx, VX_DF_IMAGE_U8,
+                ivx::Image::createAddressing(a.cols*a.channels(), a.rows, 1, (vx_int32)(a.step)), src.data),
+            ib = ivx::Image::createFromHandle(ctx, VX_DF_IMAGE_U8,
+                ivx::Image::createAddressing(dst.cols*dst.channels(), dst.rows, 1, (vx_int32)(dst.step)), dst.data);
+
+        ivx::IVX_CHECK_STATUS(vxuThreshold(ctx, ia, thh, ib));
+#if IMPL_OPENVX_TOZERO
+        if (type == THRESH_TOZERO || type == THRESH_TOZERO_INV)
+        {
+            ivx::Image
+                ic = ivx::Image::createFromHandle(ctx, VX_DF_IMAGE_U8,
+                    ivx::Image::createAddressing(dst.cols*dst.channels(), dst.rows, 1, (vx_int32)(dst.step)), dst.data);
+            ivx::IVX_CHECK_STATUS(vxuAnd(ctx, ib, ia, ic));
+        }
+#endif
+    }
+    catch (ivx::RuntimeError & e)
+    {
+        VX_DbgThrow(e.what());
+    }
+    catch (ivx::WrapperError & e)
+    {
+        VX_DbgThrow(e.what());
+    }
+
+    return true;
+}
+#endif
+
 }
 
 double cv::threshold( InputArray _src, OutputArray _dst, double thresh, double maxval, int type )
@@ -1296,6 +1388,10 @@ double cv::threshold( InputArray _src, OutputArray _dst, double thresh, double m
                 src.copyTo(dst);
             return thresh;
         }
+
+       CV_OVX_RUN(!ovx::skipSmallImages<VX_KERNEL_THRESHOLD>(src.cols, src.rows),
+                  openvx_threshold(src, dst, ithresh, imaxval, type), (double)ithresh)
+
         thresh = ithresh;
         maxval = imaxval;
     }

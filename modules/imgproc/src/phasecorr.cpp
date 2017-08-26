@@ -167,6 +167,9 @@ static void divSpectrums( InputArray _srcA, InputArray _srcB, OutputArray _dst, 
     _dst.create( srcA.rows, srcA.cols, type );
     Mat dst = _dst.getMat();
 
+    CV_Assert(dst.data != srcA.data); // non-inplace check
+    CV_Assert(dst.data != srcB.data); // non-inplace check
+
     bool is_1d = (flags & DFT_ROWS) || (rows == 1 || (cols == 1 &&
              srcA.isContinuous() && srcB.isContinuous() && dst.isContinuous()));
 
@@ -576,6 +579,7 @@ void cv::createHanningWindow(OutputArray _dst, cv::Size winSize, int type)
     CV_INSTRUMENT_REGION()
 
     CV_Assert( type == CV_32FC1 || type == CV_64FC1 );
+    CV_Assert( winSize.width > 1 && winSize.height > 1 );
 
     _dst.create(winSize, type);
     Mat dst = _dst.getMat();
