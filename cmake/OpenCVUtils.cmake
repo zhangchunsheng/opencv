@@ -387,7 +387,7 @@ macro(ocv_warnings_disable)
   endif(NOT ENABLE_NOISY_WARNINGS)
 endmacro()
 
-macro(ocv_append_sourge_file_compile_definitions source)
+macro(ocv_append_source_file_compile_definitions source)
   get_source_file_property(_value "${source}" COMPILE_DEFINITIONS)
   if(_value)
     set(_value ${_value} ${ARGN})
@@ -939,6 +939,12 @@ function(ocv_target_link_libraries target)
     __ocv_push_target_link_libraries(${LINK_MODE} ${LINK_PENDING})
   endif()
 endfunction()
+
+function(ocv_target_compile_definitions target)
+  _ocv_fix_target(target)
+  target_compile_definitions(${target} ${ARGN})
+endfunction()
+
 
 function(_ocv_append_target_includes target)
   if(DEFINED OCV_TARGET_INCLUDE_DIRS_${target})
